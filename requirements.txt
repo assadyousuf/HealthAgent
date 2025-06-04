@@ -7,3 +7,4 @@ aiohttp
 xmltodict 
 pipecat-ai-flows
 usaddress==0.5.10
+gunicorn
