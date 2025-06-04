@@ -4,7 +4,7 @@ import os
 import xml  # Added import
 
 import uvicorn
-from bot import run_bot # Modified import
+from bot import run_bot  # Modified import
 from fastapi import FastAPI, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.responses import HTMLResponse
@@ -31,7 +31,7 @@ async def start_call():
     streams_xml_path = os.path.join(TEMPLATE_DIR, "streams.xml")
     with open(streams_xml_path) as f:
         xml_content = f.read()
-    
+
     return HTMLResponse(content=xml_content, media_type="application/xml")
 
 
@@ -49,12 +49,18 @@ async def websocket_endpoint(websocket: WebSocket):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Pipecat AssortHealth Agent Server") # Modified description
+    parser = argparse.ArgumentParser(
+        description="Pipecat AssortHealth Agent Server"
+    )  # Modified description
     parser.add_argument(
-        "-t", "--test", action="store_true", default=False, help="set the server in testing mode"
+        "-t",
+        "--test",
+        action="store_true",
+        default=False,
+        help="set the server in testing mode",
     )
     args, _ = parser.parse_known_args()
 
     app.state.testing = args.test
 
-    uvicorn.run(app, host="0.0.0.0", port=8765) 
+    uvicorn.run(app, host="0.0.0.0", port=8765)

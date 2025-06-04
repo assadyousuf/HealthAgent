@@ -13,11 +13,13 @@
 # - Provider appointment scheduling
 #
 
-import asyncio
+import os
 import sys
 from pathlib import Path
 from typing import Dict
-
+import usaddress  # Add this import
+import asyncio
+import re  # Added for email regex parsing
 
 from dotenv import load_dotenv
 from loguru import logger
@@ -34,6 +36,58 @@ from pipecat_flows import (
 sys.path.append(str(Path(__file__).parent.parent))
 
 load_dotenv(override=True)
+
+# Import email service
+from services.email_service import EmailService
+from services.address_validator import AddressValidator
+
+
+def get_phonetic_representation(char: str) -> str:
+    """Return phonetic representation for letters, specific words for symbols, or char itself."""
+    char_lower = char.lower()
+    if char_lower in NATO_PHONETIC_ALPHABET:
+        return NATO_PHONETIC_ALPHABET[char_lower]
+    elif char_lower == ".":
+        return "dot"
+    elif char_lower == "@":
+        return "at sign"
+    elif char_lower == "-":
+        return "hyphen"
+    elif char_lower == "_":
+        return "underscore"
+    # For digits and other symbols, return them as is to be read normally.
+    return char
+
+
+# Helper for phonetic spelling
+NATO_PHONETIC_ALPHABET = {
+    "a": "Alpha",
+    "b": "Bravo",
+    "c": "Charlie",
+    "d": "Delta",
+    "e": "Echo",
+    "f": "Foxtrot",
+    "g": "Golf",
+    "h": "Hotel",
+    "i": "India",
+    "j": "Juliett",
+    "k": "Kilo",
+    "l": "Lima",
+    "m": "Mike",
+    "n": "November",
+    "o": "Oscar",
+    "p": "Papa",
+    "q": "Quebec",
+    "r": "Romeo",
+    "s": "Sierra",
+    "t": "Tango",
+    "u": "Uniform",
+    "v": "Victor",
+    "w": "Whiskey",
+    "x": "X-ray",
+    "y": "Yankee",
+    "z": "Zulu",
+}
 
 
 # Helper function to convert spaced letters to word
@@ -66,8 +120,8 @@ def format_address_for_spelling(address: str) -> str:
 
 
 # Mock address validation service
+"""
 class MockAddressValidator:
-    """Simulates an address validation service."""
 
     def __init__(self):
         # Define some valid zip codes for testing
@@ -80,22 +134,49 @@ class MockAddressValidator:
         }
 
     async def validate_address(self, street: str, city: str, zip_code: str) -> bool:
-        """Mock address validation - returns True if zip code matches city."""
         await asyncio.sleep(0.5)  # Simulate API call delay
         return True
+"""
 
 
-# Mock provider schedule
-AVAILABLE_TIMES = [
-    "Monday, December 18 at 9:00 AM",
-    "Monday, December 18 at 10:30 AM",
-    "Tuesday, December 19 at 2:00 PM",
-    "Wednesday, December 20 at 11:00 AM",
-    "Thursday, December 21 at 3:30 PM",
+# Mock provider schedule with doctors
+AVAILABLE_APPOINTMENTS = [
+    {
+        "time": "Monday, December 18 at 9:00 AM",
+        "doctor": "Dr. Sarah Johnson",
+        "specialty": "Internal Medicine",
+    },
+    {
+        "time": "Monday, December 18 at 10:30 AM",
+        "doctor": "Dr. Michael Chen",
+        "specialty": "Cardiology",
+    },
+    {
+        "time": "Tuesday, December 19 at 2:00 PM",
+        "doctor": "Dr. Emily Rodriguez",
+        "specialty": "Family Medicine",
+    },
+    {
+        "time": "Wednesday, December 20 at 11:00 AM",
+        "doctor": "Dr. David Thompson",
+        "specialty": "Orthopedics",
+    },
+    {
+        "time": "Thursday, December 21 at 3:30 PM",
+        "doctor": "Dr. Lisa Park",
+        "specialty": "Dermatology",
+    },
 ]
 
-# Initialize validators
-address_validator = MockAddressValidator()
+# Extract just the times for backward compatibility
+AVAILABLE_TIMES = [apt["time"] for apt in AVAILABLE_APPOINTMENTS]
+
+address_validator = AddressValidator(
+    client_id=os.getenv("USPS_CLIENT_ID"), client_secret=os.getenv("USPS_CLIENT_SECRET")
+)
+
+# Initialize email service
+email_service = EmailService()
 
 
 # Result types
@@ -138,6 +219,10 @@ class AddressComponentResult(FlowResult):
 
 class ContactResult(FlowResult):
     contact_info: str
+
+
+class EmailPreferenceResult(FlowResult):
+    wants_email: bool
 
 
 class AppointmentResult(FlowResult):
@@ -350,8 +435,21 @@ async def collect_phone(args: FlowArgs) -> ContactResult:
 
 
 async def collect_email(args: FlowArgs) -> ContactResult:
-    """Collect email address."""
+    """Collect patient's email address."""
     return ContactResult(contact_info=args["email"])
+
+
+async def confirm_email_spelling(args: FlowArgs) -> SpellingConfirmationResult:
+    """Confirm email spelling."""
+    return SpellingConfirmationResult(
+        confirmed=args["confirmed"],
+        corrected_spelling=args.get("corrected_spelling", ""),
+    )
+
+
+async def ask_email_preference(args: FlowArgs) -> EmailPreferenceResult:
+    """Ask if patient wants to provide email."""
+    return EmailPreferenceResult(wants_email=args["wants_email"])
 
 
 async def select_appointment(args: FlowArgs) -> AppointmentResult:
@@ -629,68 +727,265 @@ async def handle_full_address_collection(
 async def handle_full_address_confirmation(
     args: Dict, result: SpellingConfirmationResult, flow_manager: FlowManager
 ):
-    """Handle full address confirmation."""
-    if result["confirmed"]:
-        # Address confirmed, validate it
-        full_address = flow_manager.state.get("full_address", "")
+    """Handle full address confirmation using usaddress parsing."""
+    # Define a mapping for state names to abbreviations
+    # This can be expanded as needed
+    state_name_to_abbreviation = {
+        "alabama": "AL",
+        "alaska": "AK",
+        "arizona": "AZ",
+        "arkansas": "AR",
+        "california": "CA",
+        "colorado": "CO",
+        "connecticut": "CT",
+        "delaware": "DE",
+        "florida": "FL",
+        "georgia": "GA",
+        "hawaii": "HI",
+        "idaho": "ID",
+        "illinois": "IL",
+        "indiana": "IN",
+        "iowa": "IA",
+        "kansas": "KS",
+        "kentucky": "KY",
+        "louisiana": "LA",
+        "maine": "ME",
+        "maryland": "MD",
+        "massachusetts": "MA",
+        "michigan": "MI",
+        "minnesota": "MN",
+        "mississippi": "MS",
+        "missouri": "MO",
+        "montana": "MT",
+        "nebraska": "NE",
+        "nevada": "NV",
+        "new hampshire": "NH",
+        "new jersey": "NJ",
+        "new mexico": "NM",
+        "new york": "NY",
+        "north carolina": "NC",
+        "north dakota": "ND",
+        "ohio": "OH",
+        "oklahoma": "OK",
+        "oregon": "OR",
+        "pennsylvania": "PA",
+        "rhode island": "RI",
+        "south carolina": "SC",
+        "south dakota": "SD",
+        "tennessee": "TN",
+        "texas": "TX",
+        "utah": "UT",
+        "vermont": "VT",
+        "virginia": "VA",
+        "washington": "WA",
+        "west virginia": "WV",
+        "wisconsin": "WI",
+        "wyoming": "WY",
+    }
 
-        # Simple parsing - in production, use a proper address parser
-        # Expecting format like "123 Main St, New York, NY 10001"
-        parts = full_address.split(",")
-        if len(parts) >= 3:
-            street = parts[0].strip()
-            city = parts[1].strip()
-            state_zip = parts[2].strip().split()
-            if len(state_zip) >= 2:
-                state = state_zip[0]
-                zip_code = state_zip[-1]
+    if result.get("confirmed") and not result.get("corrected_spelling"):
+        full_address_str = flow_manager.state.get("full_address", "")
+        logger.info(
+            f"Address confirmed: '{full_address_str}'. Proceeding to parse and validate."
+        )
+    elif result.get("corrected_spelling"):
+        # This branch is for when a correction was made, and we are now confirming that corrected version.
+        # However, the current flow design is that if a correction is given,
+        # handle_full_address_confirmation sets confirmed=false and corrected_spelling,
+        # then loops back to create_confirm_full_address_node with the new address.
+        # That new address is then confirmed in the next user turn.
+        # So, if corrected_spelling is present here, it means the LLM provided it *despite* confirming (error case)
+        # OR confirmed=false was set and corrected_spelling was provided (intended correction path).
+        # The logic in the calling node should ensure we only get here with a *confirmed* address (original or corrected one).
 
-                # Validate address
-                is_valid = await address_validator.validate_address(
-                    street, city, zip_code
-                )
-
-                if is_valid:
-                    flow_manager.state["address"] = {
-                        "street": street,
-                        "city": city,
-                        "state": state,
-                        "zip_code": zip_code,
-                    }
-                    await flow_manager.set_node(
-                        "collect_phone", create_collect_phone_node()
-                    )
-                else:
-                    # Address invalid, inform user and ask again
-                    await flow_manager.set_node(
-                        "address_invalid_full", create_address_invalid_full_node()
-                    )
-            else:
-                # Invalid format
-                await flow_manager.set_node(
-                    "address_invalid_format", create_address_invalid_format_node()
-                )
-        else:
-            # Invalid format
-            await flow_manager.set_node(
-                "address_invalid_format", create_address_invalid_format_node()
+        # For safety, if a corrected_spelling is present, we should prioritize it if confirmed is also true (LLM confusion)
+        # or if confirmed is false (standard correction path)
+        if result.get("confirmed", False) and result.get("corrected_spelling"):
+            logger.warning(
+                f"LLM set confirmed=true but also provided corrected_address: '{result.get("corrected_spelling")}'. Prioritizing corrected."
             )
-    else:
-        # User provided correction
-        if result["corrected_spelling"]:
-            flow_manager.state["full_address"] = result["corrected_spelling"]
+            full_address_str = result.get("corrected_spelling")
+            flow_manager.state["full_address"] = (
+                full_address_str  # Update state with this correction
+            )
+        elif not result.get("confirmed") and result.get("corrected_spelling"):
+            full_address_str = result.get("corrected_spelling")
+            flow_manager.state["full_address"] = (
+                full_address_str  # Update state with the correction
+            )
+            logger.info(
+                f"Address correction provided: '{full_address_str}'. Looping back to confirm this new address."
+            )
             # Loop back to confirm the new address
             await flow_manager.set_node(
                 "confirm_full_address",
-                create_confirm_full_address_node(result["corrected_spelling"]),
+                create_confirm_full_address_node(full_address_str),
             )
-        else:
-            # No correction provided, ask again
-            current_address = flow_manager.state.get("full_address", "")
+            return  # Exit early as we are re-confirming
+        else:  # Should not happen if logic is correct: confirmed=true and no corrected_spelling, or confirmed=false and corrected_spelling
+            logger.error(
+                "Invalid state in handle_full_address_confirmation with corrected_spelling."
+            )
             await flow_manager.set_node(
-                "confirm_full_address",
-                create_confirm_full_address_node(current_address),
+                "address_invalid_format", create_address_invalid_format_node()
             )
+            return
+
+    else:  # Not confirmed, and no correction given (e.g. user just said "no")
+        current_address = flow_manager.state.get("full_address", "")
+        logger.info(
+            f"Address not confirmed, no correction. Re-confirming: {current_address}"
+        )
+        await flow_manager.set_node(
+            "confirm_full_address",
+            create_confirm_full_address_node(current_address),
+        )
+        return
+
+    if not full_address_str:
+        logger.warning(
+            "Full address string is empty in handle_full_address_confirmation after confirmation."
+        )
+        await flow_manager.set_node(
+            "address_invalid_format", create_address_invalid_format_node()
+        )
+        return
+
+    try:
+        # Parse the address using usaddress
+        # usaddress.tag returns a list of tuples (value, tag) and an 'Ambiguous' type if it fails badly.
+        parsed_address_dict = {}
+        address_parts = []  # For reconstructing street line 1
+
+        # Use usaddress.repeated_tag for potentially cleaner, structured output
+        tagged_address, address_type = usaddress.tag(full_address_str)
+
+        if address_type == "Ambiguous":
+            logger.warning(
+                f"Address '{full_address_str}' is ambiguous according to usaddress."
+            )
+            await flow_manager.set_node(
+                "address_invalid_format", create_address_invalid_format_node()
+            )
+            return
+
+        # Define components for street address line 1
+        # Order matters for reconstruction. Add more tags if needed.
+        street_tags_ordered = [
+            "AddressNumberPrefix",
+            "AddressNumber",
+            "AddressNumberSuffix",
+            "StreetNamePreDirectional",
+            "StreetNamePreModifier",
+            "StreetNamePreType",
+            "StreetName",
+            "StreetNamePostType",
+            "StreetNamePostModifier",
+            "StreetNamePostDirectional",
+            "SubaddressType",
+            "SubaddressIdentifier",  # For apt, suite, etc.
+        ]
+
+        temp_street_parts = {}  # Use dict to store parts by tag to ensure order later
+
+        for key, value in tagged_address.items():
+            parsed_address_dict[key] = value
+            if key in street_tags_ordered:
+                temp_street_parts[key] = value
+
+        # Reconstruct street_address_line1 in the correct order
+        street_address_line1_parts = [
+            temp_street_parts[tag]
+            for tag in street_tags_ordered
+            if tag in temp_street_parts
+        ]
+        street_address_line1 = " ".join(street_address_line1_parts)
+
+        city_parsed = tagged_address.get("PlaceName")
+        state_full_name_parsed = tagged_address.get("StateName")
+        zip_parsed = tagged_address.get("ZipCode")
+
+        logger.info(
+            f"Parsed address components: Street='{street_address_line1}', City='{city_parsed}', State Name='{state_full_name_parsed}', ZIP='{zip_parsed}'"
+        )
+
+        if not state_full_name_parsed:
+            logger.warning(f"State name not parsed from address: '{full_address_str}'")
+            await flow_manager.set_node(
+                "address_invalid_format", create_address_invalid_format_node()
+            )
+            return
+
+        state_abbreviation = state_name_to_abbreviation.get(
+            state_full_name_parsed.lower()
+        )
+
+        if not state_abbreviation:
+            logger.warning(
+                f"Could not convert state name '{state_full_name_parsed}' to abbreviation. Address: '{full_address_str}'"
+            )
+            await flow_manager.set_node(
+                "address_invalid_format", create_address_invalid_format_node()
+            )
+            return
+
+        logger.info(
+            f"Converted state '{state_full_name_parsed}' to abbreviation '{state_abbreviation}'"
+        )
+
+        if not all(
+            [street_address_line1, city_parsed, zip_parsed]
+        ):  # state_abbreviation is now checked
+            logger.warning(
+                f"Could not parse all required address components from '{full_address_str}'. Missing: street: {not street_address_line1}, city: {not city_parsed}, zip: {not zip_parsed}"
+            )
+            await flow_manager.set_node(
+                "address_invalid_format", create_address_invalid_format_node()
+            )
+            return
+
+        # Validate address using the new validator
+        # Ensure the arguments match what AddressValidator expects (e.g., street, city, state, zip5)
+        is_valid = await address_validator.validate_address(
+            street1=street_address_line1,
+            city=city_parsed,
+            state=state_abbreviation,  # Use the 2-letter abbreviation
+            zip5=zip_parsed,
+        )
+
+        if is_valid:
+            logger.info(
+                f"Address validated successfully: {street_address_line1}, {city_parsed}, {state_abbreviation} {zip_parsed}"
+            )
+            flow_manager.state["address"] = {
+                "street": street_address_line1,
+                "city": city_parsed,
+                "state": state_abbreviation,  # Store abbreviation
+                "zip_code": zip_parsed,
+            }
+            await flow_manager.set_node("collect_phone", create_collect_phone_node())
+        else:
+            logger.warning(
+                f"Address validation failed for: {street_address_line1}, {city_parsed}, {state_abbreviation} {zip_parsed}"
+            )
+            await flow_manager.set_node(
+                "address_invalid_full", create_address_invalid_full_node()
+            )
+
+    except usaddress.RepeatedLabelError as e:
+        logger.error(
+            f"Error parsing address with usaddress (RepeatedLabelError): {full_address_str} - {e}"
+        )
+        await flow_manager.set_node(
+            "address_invalid_format", create_address_invalid_format_node()
+        )
+    except Exception as e:
+        logger.error(
+            f"Unexpected error during address parsing or validation: {e} for address '{full_address_str}'"
+        )
+        await flow_manager.set_node(
+            "address_invalid_format", create_address_invalid_format_node()
+        )
 
 
 async def handle_restart_full_address(
@@ -879,28 +1174,161 @@ async def handle_zip_code_collection(
 async def handle_phone_collection(
     args: Dict, result: ContactResult, flow_manager: FlowManager
 ):
-    """Store phone and move to email collection."""
+    """Store phone and move to email preference check."""
     flow_manager.state["phone_number"] = result["contact_info"]
-    await flow_manager.set_node("collect_email", create_collect_email_node())
+    await flow_manager.set_node(
+        "ask_email_preference", create_ask_email_preference_node()
+    )
+
+
+async def handle_email_preference(
+    args: Dict, result: EmailPreferenceResult, flow_manager: FlowManager
+):
+    """Handle email preference and route accordingly."""
+    if result["wants_email"]:
+        # User wants to provide email, go to email collection
+        await flow_manager.set_node("collect_email", create_collect_email_node())
+    else:
+        # User doesn't want to provide email, skip to appointment scheduling
+        flow_manager.state["email"] = None  # Mark as explicitly skipped
+        await flow_manager.set_node(
+            "schedule_appointment", create_schedule_appointment_node()
+        )
 
 
 async def handle_email_collection(
     args: Dict, result: ContactResult, flow_manager: FlowManager
 ):
-    """Store email and move to appointment scheduling."""
-    flow_manager.state["email"] = result["contact_info"]
+    """Store email and move to confirmation."""
+    # Try to extract email using regex from the initial collection as well
+    # This helps if the user says something like "my email is example@example.com thanks"
+    raw_email_input = result.get("contact_info", "")
+    emails_found = []
+    if raw_email_input:
+        emails_found = re.findall(
+            r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b",
+            raw_email_input,
+            re.IGNORECASE,
+        )
+
+    extracted_email = ""
+    if emails_found:
+        extracted_email = emails_found[0].lower()
+        if len(emails_found) > 1:
+            logger.warning(
+                f"Multiple emails found during initial collection: {emails_found}. Using first: {extracted_email}"
+            )
+        logger.info(f"Extracted email via regex during collection: {extracted_email}")
+    elif raw_email_input:  # No regex match, but there was input
+        logger.warning(
+            f"No email pattern found via regex in initial input: '{raw_email_input}'. Using raw input for now."
+        )
+        extracted_email = (
+            raw_email_input  # Fallback to raw input, hoping LLM gave just the email
+        )
+    else:
+        logger.warning("No email input received in collect_email handler.")
+        # Fallback to an empty string or a placeholder to avoid erroring out immediately
+        extracted_email = "placeholder@example.com"  # Or handle as an error state
+
+    flow_manager.state["email"] = extracted_email
     await flow_manager.set_node(
-        "schedule_appointment", create_schedule_appointment_node()
+        "confirm_email", create_confirm_email_node(extracted_email)
     )
+
+
+async def handle_email_confirmation(
+    args: Dict, result: SpellingConfirmationResult, flow_manager: FlowManager
+):
+    """Handle email confirmation."""
+    user_confirmed = result.get("confirmed", False)
+    raw_correction_text = result.get("corrected_spelling", "")
+
+    current_email_in_state = flow_manager.state.get("email", "")
+
+    if user_confirmed and not raw_correction_text:
+        # Email confirmed by user, and LLM did not provide any alternative correction text.
+        logger.info(f"Email '{current_email_in_state}' confirmed by user.")
+        await flow_manager.set_node(
+            "schedule_appointment", create_schedule_appointment_node()
+        )
+    elif raw_correction_text:
+        # User indicated 'no' or provided a correction, or LLM provided correction text.
+        # Try to extract an email from this correction text using regex.
+        emails_found = re.findall(
+            r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b",
+            raw_correction_text,
+            re.IGNORECASE,
+        )
+
+        if emails_found:
+            extracted_email = emails_found[
+                0
+            ].lower()  # Take the first found email, normalize to lowercase
+            if len(emails_found) > 1:
+                logger.warning(
+                    f"Multiple emails found in correction text: '{raw_correction_text}'. Using the first one: {extracted_email}"
+                )
+
+            flow_manager.state["email"] = extracted_email
+            logger.info(
+                f"Email correction extracted via regex: '{extracted_email}'. Looping back to confirm this new email."
+            )
+            await flow_manager.set_node(
+                "confirm_email", create_confirm_email_node(extracted_email)
+            )
+        else:
+            # No valid email found in the correction text by regex.
+            logger.warning(
+                f"No valid email pattern found in correction text: '{raw_correction_text}'. Asking to re-confirm current email: '{current_email_in_state}'"
+            )
+            # Re-trigger confirmation for the current email in state, or a placeholder if none.
+            await flow_manager.set_node(
+                "confirm_email",
+                create_confirm_email_node(
+                    current_email_in_state
+                    if current_email_in_state
+                    else "your.email@example.com"
+                ),
+            )
+    else:  # Not confirmed (user_confirmed is False), and no correction text given (e.g., user just said "no")
+        logger.info(
+            f"Email spelling not confirmed by user, no correction text offered. Re-confirming current email: '{current_email_in_state}'"
+        )
+        await flow_manager.set_node(
+            "confirm_email",
+            create_confirm_email_node(
+                current_email_in_state
+                if current_email_in_state
+                else "your.email@example.com"
+            ),
+        )
 
 
 async def handle_appointment_selection(
     args: Dict, result: AppointmentResult, flow_manager: FlowManager
 ):
-    """Store appointment time and move to confirmation."""
-    flow_manager.state["appointment_time"] = result["selected_time"]
+    """Store appointment time and doctor info, then move to confirmation."""
+    selected_time = result["selected_time"]
+
+    # Find the corresponding doctor information
+    selected_appointment = next(
+        (apt for apt in AVAILABLE_APPOINTMENTS if apt["time"] == selected_time), None
+    )
+
+    # Store appointment details
+    flow_manager.state["appointment_time"] = selected_time
+    if selected_appointment:
+        flow_manager.state["doctor_name"] = selected_appointment["doctor"]
+        flow_manager.state["doctor_specialty"] = selected_appointment["specialty"]
+
     await flow_manager.set_node(
-        "confirm_appointment", create_confirm_appointment_node(result["selected_time"])
+        "confirm_appointment",
+        create_confirm_appointment_node(
+            selected_time,
+            selected_appointment["doctor"] if selected_appointment else None,
+            selected_appointment["specialty"] if selected_appointment else None,
+        ),
     )
 
 
@@ -920,7 +1348,39 @@ async def handle_restart_address(
 
 
 async def handle_end(args: Dict, result: FlowResult, flow_manager: FlowManager):
-    """End the intake process."""
+    """End the intake process and send confirmation email if applicable."""
+
+    # Check if patient provided an email address
+    patient_email = flow_manager.state.get("email")
+
+    if patient_email:
+        # Prepare appointment details for email
+        appointment_details = {
+            "doctor": flow_manager.state.get("doctor_name", "N/A"),
+            "time": flow_manager.state.get("appointment_time", "N/A"),
+            "specialty": flow_manager.state.get("doctor_specialty", "N/A"),
+        }
+
+        # Send confirmation email
+        try:
+            success = await email_service.send_appointment_confirmation(
+                recipient_email=patient_email, appointment_details=appointment_details
+            )
+
+            if success:
+                logger.info(
+                    f"Appointment confirmation email sent successfully to {patient_email}"
+                )
+            else:
+                logger.warning(
+                    f"Failed to send appointment confirmation email to {patient_email}"
+                )
+
+        except Exception as e:
+            logger.error(
+                f"Error sending appointment confirmation email to {patient_email}: {e}"
+            )
+
     await flow_manager.set_node("end", create_end_node())
 
 
@@ -1177,13 +1637,13 @@ def create_check_referral_node() -> NodeConfig:
         "task_messages": [
             {
                 "role": "system",
-                "content": "Ask if the patient has a referral from another physician. Do NOT ask if they want to continue with the intake process. Simply ask about the referral and move on based on their response. If they say no, immediately proceed to ask about their chief complaint without any transitional questions.",
+                "content": "Ask if the patient has a referral from another physician. Do NOT call any function yet - just ask the question. IMPORTANT: After the patient responds 'yes' or 'no', you MUST call the 'check_referral_status' function with their response. Do NOT ask if they want to continue with the intake process. The 'check_referral_status' function will handle the next step.",
             }
         ],
         "functions": [
             FlowsFunctionSchema(
                 name="check_referral_status",
-                description="Check if patient has a referral. Call this immediately after they respond yes or no to the referral question.",
+                description="Call this function ONLY after the patient has responded 'yes' or 'no' to the referral question. Pass their response to the 'has_referral' parameter.",
                 properties={
                     "has_referral": {
                         "type": "boolean",
@@ -1314,13 +1774,13 @@ def create_collect_complaint_node() -> NodeConfig:
         "task_messages": [
             {
                 "role": "system",
-                "content": "Now, what brings you in today? Ask the patient about their chief medical complaint or reason for the visit. Be empathetic and let them explain in their own words. Do NOT mention anything about continuing the intake process - just naturally ask about their reason for visiting.",
+                "content": "Now, what brings you in today? Ask the patient about their chief medical complaint or reason for the visit. Be empathetic and let them explain in their own words. Do NOT mention anything about continuing the intake process - just naturally ask about their reason for visiting. Do NOT call any function yet - wait for their response. Only call collect_chief_complaint after the patient tells you their reason for visiting.",
             }
         ],
         "functions": [
             FlowsFunctionSchema(
                 name="collect_chief_complaint",
-                description="Record patient's chief medical complaint. Call this after they explain their reason for visiting.",
+                description="Call this ONLY after the patient has explained their reason for visiting. The complaint parameter should be the actual reason they stated, not your question.",
                 properties={
                     "complaint": {
                         "type": "string",
@@ -1341,17 +1801,17 @@ def create_collect_full_address_node() -> NodeConfig:
         "task_messages": [
             {
                 "role": "system",
-                "content": "Now I need to collect your full address. Please tell me your complete address including street number, street name, city, state, and ZIP code. For example: '123 Main Street, New York, NY 10001'. Do NOT call any function yet - wait for their response.",
+                "content": "Now I need to collect your full address. Please tell me your complete address including street number, street name, city, state, and ZIP code. For example: '123 Main Street, New York, NY 10001'. Do NOT call any function yet - wait for their response. Parse out the address components (street number, street name, city, state, zip code) from the user's response from the users resposne (street number, street name, city, state, zip code).",
             }
         ],
         "functions": [
             FlowsFunctionSchema(
                 name="collect_full_address",
-                description="Call this ONLY after the patient has told you their full address. The address parameter should be the complete address they said.",
+                description="Call this ONLY after the patient has told you their full address. The address parameter should be the complete address they said. Only parse out the address component (street number, street name, city, state, zip code) from the user's response.",
                 properties={
                     "address": {
                         "type": "string",
-                        "description": "The full address as stated by the patient",
+                        "description": "The full address (street number, street name, city, state, zip code) as stated by the patient",
                     }
                 },
                 required=["address"],
@@ -1370,21 +1830,21 @@ def create_confirm_full_address_node(address: str) -> NodeConfig:
         "task_messages": [
             {
                 "role": "system",
-                "content": f"The patient said their address is '{address}'. You MUST spell it out character by character for confirmation. Say EXACTLY: 'Let me confirm your address character by character. Is it {spaced_address}?' Make sure to pronounce each character and digit separately with clear pauses between them. When you see double spaces, pause slightly longer. When you see 'comma', say the word 'comma'. Do NOT call any function yet - wait for their response. If they say yes/correct, set confirmed to true. If they provide a different address or say no, set confirmed to false and provide the corrected_address.",
+                "content": f"The patient said their address is '{address}'. You MUST spell it out character by character for confirmation. Say EXACTLY: 'Let me confirm your address character by character. Is it {spaced_address}?' Make sure to pronounce each character and digit separately with clear pauses between them. When you see double spaces, pause slightly longer. When you see 'comma', say the word 'comma'.\n\nDo NOT call any function yet - wait for their response.\n\nCRITICAL INSTRUCTIONS FOR FUNCTION CALL:\n1. After the patient responds, you MUST call the 'confirm_full_address' function ONE TIME.\n2. If the patient says 'yes', 'correct', 'that's right', or similar affirmative, call the function with 'confirmed' set to true, and 'corrected_address' set to an empty string.\n3. If the patient says 'no', provides ANY correction, or indicates the spelling is wrong in ANY way, you MUST call the function with 'confirmed' set to false, and 'corrected_address' set to the complete, corrected address they provided. Do NOT set 'confirmed' to true in this case.\n4. Ensure 'corrected_address' is the full address string, not just a part of it.",
             }
         ],
         "functions": [
             FlowsFunctionSchema(
                 name="confirm_full_address",
-                description="Call this ONLY after the patient responds to your address confirmation. Set confirmed=true if they agree, or confirmed=false with corrected_address if they provide a different address.",
+                description="Call this ONLY after the patient responds to your address confirmation. Follow CRITICAL INSTRUCTIONS: set confirmed=true ONLY if they agree. If they provide ANY different spelling or say no, set confirmed=false and provide the full corrected_address.",
                 properties={
                     "confirmed": {
                         "type": "boolean",
-                        "description": "Whether the patient confirmed the address is correct",
+                        "description": "Set to true ONLY if patient explicitly confirms the exact spelling. Otherwise, set to false.",
                     },
                     "corrected_address": {
                         "type": "string",
-                        "description": "The corrected address if the patient said it was wrong",
+                        "description": "The full corrected address if the patient said it was wrong or provided a new one. Only parse out the address component (street number, street name, city, state, zip code) from the user's response. Empty if confirmed.",
                     },
                 },
                 required=["confirmed"],
@@ -1401,13 +1861,13 @@ def create_address_invalid_full_node() -> NodeConfig:
         "task_messages": [
             {
                 "role": "system",
-                "content": "I'm sorry, but I couldn't validate that address. This might be because the ZIP code doesn't match the city. Let's try again. Please tell me your complete address including street number, street name, city, state, and ZIP code.",
+                "content": "I'm sorry, but I couldn't validate that address. This might be because the ZIP code doesn't match the city. You MUST say this and ask the patient to provide their address again. Say EXACTLY: 'I'm sorry, but I couldn't validate that address. This might be because the ZIP code doesn't match the city. Let's try again. Please tell me your complete address including street number, street name, city, state, and ZIP code.' Do NOT call any function yet - wait for their response. You should expect the user to provide their full address. Once they do, call the `restart_address_collection` function. Do not pass any arguments to it.",
             }
         ],
         "functions": [
             FlowsFunctionSchema(
                 name="restart_address_collection",
-                description="Restart full address collection",
+                description="Call this function ONLY AFTER the patient provides their full address again in response to the request for a re-validated address. This function takes no arguments.",
                 properties={},
                 required=[],
                 handler=restart_address_collection,
@@ -1423,13 +1883,13 @@ def create_address_invalid_format_node() -> NodeConfig:
         "task_messages": [
             {
                 "role": "system",
-                "content": "I'm sorry, but I couldn't understand the format of your address. Please provide your complete address in this format: street number and name, city, state abbreviation and ZIP code. For example: '123 Main Street, New York, NY 10001'.",
+                "content": "I'm sorry, but I couldn't understand the format of your address. You MUST say this and ask the patient to provide their address again. Say EXACTLY: 'I'm sorry, but I couldn't understand the format of your address. Please provide your complete address in this format: street number and name, city, state abbreviation and ZIP code. For example: \"123 Main Street, New York, NY 10001\".' Do NOT call any function yet - wait for their response. You should expect the user to provide their full address. Once they do, call the `restart_address_collection` function. Do not pass any arguments to it.",
             }
         ],
         "functions": [
             FlowsFunctionSchema(
                 name="restart_address_collection",
-                description="Restart full address collection",
+                description="Call this function ONLY AFTER the patient provides their full address again in response to the request for a re-validated address. This function takes no arguments.",
                 properties={},
                 required=[],
                 handler=restart_address_collection,
@@ -1730,17 +2190,44 @@ def create_collect_phone_node() -> NodeConfig:
         "task_messages": [
             {
                 "role": "system",
-                "content": "Ask for the patient's phone number. Remind them to include the area code.",
+                "content": "Your first task is to ask for the patient's phone number. Say EXACTLY: 'What is your phone number? Please include the area code.' Do NOT call any function yet. You MUST wait for the patient to provide their phone number. Only AFTER the patient speaks their phone number, should you call the 'collect_phone' function with the number they provided.",
             }
         ],
         "functions": [
             FlowsFunctionSchema(
                 name="collect_phone",
-                description="Record patient's phone number",
+                description="Call this ONLY after the patient has actually spoken their phone number. The phone_number parameter must be the number the patient stated.",
                 properties={"phone_number": {"type": "string"}},
                 required=["phone_number"],
                 handler=collect_phone,
                 transition_callback=handle_phone_collection,
+            )
+        ],
+    }
+
+
+def create_ask_email_preference_node() -> NodeConfig:
+    """Create node for asking email preference."""
+    return {
+        "task_messages": [
+            {
+                "role": "system",
+                "content": "Your task is to ask the patient if they want to provide an email. Say EXACTLY: 'Would you like to provide an email address for appointment confirmations and reminders? This is optional, and you can choose not to provide one if you prefer.' Do NOT call any function yet. You MUST wait for the patient to respond with 'yes' or 'no'. Only AFTER the patient responds, call the 'ask_email_preference' function with their choice (true for yes, false for no).",
+            }
+        ],
+        "functions": [
+            FlowsFunctionSchema(
+                name="ask_email_preference",
+                description="Call this ONLY after the patient has explicitly said 'yes' or 'no' to providing an email. Set wants_email to true if they said yes, and false if they said no.",
+                properties={
+                    "wants_email": {
+                        "type": "boolean",
+                        "description": "True if patient wants to provide email, False if they prefer not to or said no",
+                    }
+                },
+                required=["wants_email"],
+                handler=ask_email_preference,
+                transition_callback=handle_email_preference,
             )
         ],
     }
@@ -1768,20 +2255,132 @@ def create_collect_email_node() -> NodeConfig:
     }
 
 
-def create_schedule_appointment_node() -> NodeConfig:
-    """Create node for appointment scheduling."""
-    available_times_str = "\n".join([f"- {time}" for time in AVAILABLE_TIMES])
+def create_confirm_email_node(email: str) -> NodeConfig:
+    """Create node for confirming email spelling."""
+
+    local_part = ""
+    domain_part = ""
+    if "@" in email:
+        parts = email.split("@", 1)
+        local_part = parts[0]
+        if len(parts) > 1:
+            domain_part = "@" + parts[1]
+    else:
+        local_part = email  # Treat the whole thing as local part if no @
+
+    spaced_email_parts = []
+    for char_local in local_part:
+        char_lower = char_local.lower()
+        if char_lower in NATO_PHONETIC_ALPHABET:
+            # Format as "L as in PhoneticWord"
+            spaced_email_parts.append(
+                f"{char_local.upper()} as in {NATO_PHONETIC_ALPHABET[char_lower]}"
+            )
+        elif char_local.isdigit():
+            spaced_email_parts.append(
+                char_local
+            )  # e.g., "3" - LLM will be instructed to read it
+        elif char_lower == ".":
+            spaced_email_parts.append("dot")
+        elif char_lower == "-":
+            spaced_email_parts.append("hyphen")
+        elif char_lower == "_":
+            spaced_email_parts.append("underscore")
+        else:
+            # Fallback for any other character in the local part
+            spaced_email_parts.append(char_local)
+
+    phonetic_local_str = " ".join(spaced_email_parts)
+
+    if domain_part:
+        spaced_domain_readable_parts = ["at sign"]
+        for char_domain in domain_part[1:]:  # Skip the '@' itself
+            if char_domain == ".":
+                spaced_domain_readable_parts.append("dot")
+            elif char_domain.isalnum():
+                spaced_domain_readable_parts.append(char_domain)
+            else:
+                spaced_domain_readable_parts.append(
+                    get_phonetic_representation(char_domain)
+                )
+        spaced_email = phonetic_local_str + " " + " ".join(spaced_domain_readable_parts)
+    else:
+        spaced_email = phonetic_local_str
+
+    system_content = f"""
+                    You are in an email spelling confirmation loop.
+                    The patient's email is supposedly '{email}'.
+                    The phonetic spelling you will use for confirmation is: '{spaced_email}'.
+
+                    You MUST spell out the email for confirmation. Say EXACTLY:
+                    'Let me confirm your email address. Is it {spaced_email}?'
+                    Ensure you pronounce each phonetic element (like 'A as in Alpha', or 'dot', or a digit) clearly, with pauses between each element.
+
+                    Do NOT call any function yet - wait for the patient's response to your question above.
+
+                    AFTER the patient responds:
+                    1. You MUST call the 'confirm_email_spelling' function EXACTLY ONCE.
+                    2. If the patient clearly says 'yes', 'correct', or a similar direct affirmative AND offers NO different spelling or correction, then call the function with 'confirmed' set to true, and 'corrected_spelling' as an empty string.
+                    3. If the patient says 'no', OR if they provide ANY correction, OR if they utter ANY different spelling (even if they also say 'yes'), you MUST call the function with 'confirmed' set to false. In this 'confirmed: false' case, the 'corrected_spelling' parameter is MANDATORY. It MUST be the complete email address derived EXCLUSIVELY from the patient's LATEST corrective statement. Convert their spoken correction (e.g., 'My email is alpha then s as in sam then d as in delta at new domain dot org') into a standard email string format (e.g., 'asd@newdomain.org'). PAY SPECIAL ATTENTION: If the patient spells out characters or uses phonetic clarifications (e.g., "that's an O as in Oscar, not zero", or "L for Lima"), prioritize these clarifications to resolve common speech-to-text ambiguities like O/0, I/1, S/5, G/6, B/8. For example, if Speech-to-Text provides 'zer0' but the user said 'O as in Oscar', ensure 'corrected_spelling' uses 'o'. DO NOT reuse or refer back to the '{email}' you initially proposed if they are correcting it; use ONLY what they just said.
+                    4. Adhere to these rules strictly to avoid errors.
+                    """
+
     return {
         "task_messages": [
             {
                 "role": "system",
-                "content": f"Offer the patient these available appointment times:\n{available_times_str}\n\nAsk which time works best for them.",
+                "content": system_content,
+            }
+        ],
+        "functions": [
+            FlowsFunctionSchema(
+                name="confirm_email_spelling",
+                description="Call this EXACTLY ONCE after the patient responds to email confirmation. If they confirm the exact spelling you proposed with NO changes, set confirmed=true. If they say NO, or provide ANY correction/alternative spelling, set confirmed=false and corrected_spelling MUST be the new complete email string from their LATEST response.",
+                properties={
+                    "confirmed": {
+                        "type": "boolean",
+                        "description": "TRUE only if patient explicitly confirmed your exact proposed spelling AND offered NO correction. FALSE if they said no, or provided ANY different spelling.",
+                    },
+                    "corrected_spelling": {
+                        "type": "string",
+                        "description": "MANDATORY if confirmed=false due to a correction. This MUST be the full corrected email address (e.g., 'user@example.com') derived ONLY from the patient's most recent corrective utterance. Empty if confirmed=true.",
+                    },
+                },
+                required=["confirmed"],
+                handler=confirm_email_spelling,
+                transition_callback=handle_email_confirmation,
+            )
+        ],
+    }
+
+
+def create_schedule_appointment_node() -> NodeConfig:
+    """Create node for appointment scheduling."""
+    # Format appointments with doctor information
+    available_times_str = "\\n".join(
+        [
+            f"- {apt['time']} with {apt['doctor']} ({apt['specialty']})"
+            for apt in AVAILABLE_APPOINTMENTS
+        ]
+    )
+    return {
+        "task_messages": [
+            {
+                "role": "system",
+                "content": f"""Your task is to offer the patient available appointment times and then record their choice.
+First, you MUST say EXACTLY: 'Here are the available appointment times:
+{available_times_str}
+
+Which time works best for you?'
+Make sure to include the doctor name and specialty for each time slot.
+Do NOT call any function yet - just speak the available times and the question.
+Only after the patient tells you their preferred time, you should call the 'select_appointment' function with their chosen time.""",
             }
         ],
         "functions": [
             FlowsFunctionSchema(
                 name="select_appointment",
-                description="Select appointment time",
+                description="Call this ONLY after the patient has told you which appointment time they prefer from the list you provided. The selected_time parameter should be the exact time string the patient chose.",
                 properties={
                     "selected_time": {"type": "string", "enum": AVAILABLE_TIMES}
                 },
@@ -1793,20 +2392,36 @@ def create_schedule_appointment_node() -> NodeConfig:
     }
 
 
-def create_confirm_appointment_node(selected_time: str) -> NodeConfig:
+def create_confirm_appointment_node(
+    selected_time: str, doctor_name: str = None, doctor_specialty: str = None
+) -> NodeConfig:
     """Create node for appointment confirmation."""
+    if doctor_name and doctor_specialty:
+        confirmation_text = f"Perfect! I have you scheduled for {selected_time} with {doctor_name} from {doctor_specialty}. We'll contact you with appointment details and any reminders."
+        question_text = "Do you have any questions before we finish?"
+        full_statement = f"{confirmation_text} {question_text}"
+    else:
+        # Fallback, ideally this isn't hit if data is consistent
+        confirmation_text = f"Okay, I have your appointment for {selected_time} confirmed. We'll contact you with appointment details."
+        question_text = "Do you have any other questions?"
+        full_statement = f"{confirmation_text} {question_text}"
+
     return {
         "task_messages": [
             {
                 "role": "system",
-                "content": f"Confirm the appointment for {selected_time} and let them know they'll receive a confirmation email. Ask if they have any questions before we finish.",
+                "content": f"""You have successfully scheduled the appointment. Your task is now to confirm this with the patient and ask if they have any final questions.
+You MUST say EXACTLY: '{full_statement}'
+Do NOT call any function yet. Wait for the patient to respond to your question.
+If they have no questions (e.g., say 'no', 'nope', 'all set'), then call 'end_intake'.
+If they ask a question, answer it briefly if you can, and then call 'end_intake'.""",
             }
         ],
         "functions": [
             FlowsFunctionSchema(
                 name="end_intake",
-                description="Complete the intake process",
-                properties={},
+                description="Call this function ONLY after you have stated the appointment confirmation and asked if the patient has questions, AND the patient has responded (e.g., said 'no questions' or after you've answered a brief question).",
+                properties={},  # No properties needed for end_intake
                 required=[],
                 handler=end_intake,
                 transition_callback=handle_end,
@@ -1822,7 +2437,7 @@ def create_end_node() -> NodeConfig:
         "task_messages": [
             {
                 "role": "system",
-                "content": "Thank the patient for their time and remind them about their appointment. End the conversation warmly.",
+                "content": "Thank the patient for their time and remind them about their appointment with their assigned doctor. Let them know we'll contact them with appointment reminders using their preferred contact method. Mention that they will receive a confirmation email shortly if they provided an email address. End the conversation warmly.",
             }
         ],
         "post_actions": [{"type": "end_conversation"}],
@@ -1867,7 +2482,11 @@ flow_config = {
         "address_invalid_full": create_address_invalid_full_node(),
         "address_invalid_format": create_address_invalid_format_node(),
         "collect_phone": create_collect_phone_node(),
+        "ask_email_preference": create_ask_email_preference_node(),
         "collect_email": create_collect_email_node(),
+        "confirm_email": create_confirm_email_node(
+            "placeholder"
+        ),  # Will be updated dynamically
         "schedule_appointment": create_schedule_appointment_node(),
         "confirm_appointment": create_confirm_appointment_node(
             "placeholder"
