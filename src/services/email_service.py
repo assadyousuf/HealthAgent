@@ -50,7 +50,6 @@ class EmailService:
         Returns:
             bool: True if email sent successfully, False otherwise
         """
-        breakpoint()
         if not self._is_configured():
             logger.error(
                 "Email service sender not properly configured. Cannot send email."
