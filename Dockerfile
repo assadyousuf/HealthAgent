@@ -33,7 +33,7 @@ RUN chown -R appuser:appgroup ${APP_HOME}
 USER appuser
 
 # Expose the port the app runs on (for documentation, Cloud Run uses $PORT env var)
-EXPOSE ${PORT}
+EXPOSE 8080
 
 # Run the application with Gunicorn
-CMD ["gunicorn", "-w", "2", "-k", "uvicorn.workers.UvicornWorker", "--bind", "0.0.0.0:${PORT}", "src.server:app"] 
+ENTRYPOINT ["gunicorn", "-w", "2", "-k", "uvicorn.workers.UvicornWorker", "--bind", "0.0.0.0:8080", "src.server:app"] 
