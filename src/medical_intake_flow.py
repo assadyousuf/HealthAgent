@@ -712,17 +712,6 @@ async def handle_full_address_confirmation(
             f"Address confirmed: '{full_address_str}'. Proceeding to parse and validate."
         )
     elif result.get("corrected_spelling"):
-        # This branch is for when a correction was made, and we are now confirming that corrected version.
-        # However, the current flow design is that if a correction is given,
-        # handle_full_address_confirmation sets confirmed=false and corrected_spelling,
-        # then loops back to create_confirm_full_address_node with the new address.
-        # That new address is then confirmed in the next user turn.
-        # So, if corrected_spelling is present here, it means the LLM provided it *despite* confirming (error case)
-        # OR confirmed=false was set and corrected_spelling was provided (intended correction path).
-        # The logic in the calling node should ensure we only get here with a *confirmed* address (original or corrected one).
-
-        # For safety, if a corrected_spelling is present, we should prioritize it if confirmed is also true (LLM confusion)
-        # or if confirmed is false (standard correction path)
         if result.get("confirmed", False) and result.get("corrected_spelling"):
             logger.warning(
                 f"LLM set confirmed=true but also provided corrected_address: '{result.get("corrected_spelling")}'. Prioritizing corrected."
