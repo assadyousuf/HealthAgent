@@ -45,7 +45,7 @@ async def websocket_endpoint(websocket: WebSocket):
     stream_sid = call_data["start"]["streamSid"]
     call_sid = call_data["start"]["callSid"]
     print("WebSocket connection accepted")
-    await run_bot(websocket, stream_sid, call_sid, app.state.testing)
+    await run_bot(websocket, stream_sid, call_sid, testing=False)
 
 
 if __name__ == "__main__":
