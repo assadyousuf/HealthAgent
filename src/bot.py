@@ -49,10 +49,7 @@ AVAILABLE_APPOINTMENTS = [
 ]
 
 
-
-
-# --- Main Bot Logic (adapted from original bot.py and patient_intake_openai.py) ---
-async def run_bot(websocket_client: Any, stream_sid: str, call_sid: str, testing: bool):
+async def run_bot(websocket_client: Any, stream_sid: str, call_sid: str):
     twilio_serializer = TwilioFrameSerializer(
         stream_sid=stream_sid,
         call_sid=call_sid,
@@ -79,7 +76,6 @@ async def run_bot(websocket_client: Any, stream_sid: str, call_sid: str, testing
     tts = CartesiaTTSService(
         api_key=cartesia_api_key,
         voice_id="71a7ad14-091c-4e8e-a314-022ece01c121",
-        push_silence_after_stop=testing,
     )
 
     llm = OpenAILLMService(
@@ -118,7 +114,6 @@ async def run_bot(websocket_client: Any, stream_sid: str, call_sid: str, testing
         tts=tts,
         flow_config=flow_config,
     )
-
 
     @transport.event_handler("on_client_connected")
     async def on_client_connected(transport_instance, client):
