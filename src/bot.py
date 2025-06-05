@@ -24,14 +24,14 @@ from pipecat_flows import FlowManager
 # Pipecat-flows imports
 
 
-from medical_intake_flow import flow_config
+from .medical_intake_flow import flow_config
 
 # Project-specific imports
 # Assuming services.address_validator is in a directory reachable by Python's import system.
 # If flow_bot.py is in src/, and services/ is in src/, then from .services.address_validator import AddressValidator
 # Or ensure PYTHONPATH is set up correctly.
 # For now, using the user's original import path from bot.py
-from services.address_validator import AddressValidator
+from .services.address_validator import AddressValidator
 
 load_dotenv(override=True)
 

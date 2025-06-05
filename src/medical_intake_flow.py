@@ -18,7 +18,6 @@ import sys
 from pathlib import Path
 from typing import Dict
 import usaddress  # Add this import
-import asyncio
 import re  # Added for email regex parsing
 
 from dotenv import load_dotenv
@@ -38,8 +37,8 @@ sys.path.append(str(Path(__file__).parent.parent))
 load_dotenv(override=True)
 
 # Import email service
-from services.email_service import EmailService
-from services.address_validator import AddressValidator
+from .services.email_service import EmailService
+from .services.address_validator import AddressValidator
 
 
 def get_phonetic_representation(char: str) -> str:
