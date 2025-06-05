@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Connect>
-    <Stream url="wss://https://assorthealthagent-893818496230.us-west2.run.app/ws"></Stream>
+    <Stream url="wss://assorthealthagent-893818496230.us-west2.run.app/ws"></Stream>
   </Connect>
   <Pause length="40"/>
 </Response> 
