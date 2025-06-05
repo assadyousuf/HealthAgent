@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Connect>
-    <Stream url="wss://4191-2600-8800-3095-b200-21c8-1781-957f-a98a.ngrok-free.app/ws"></Stream>
+    <Stream url="wss://https://assorthealthagent-893818496230.us-west2.run.app/ws"></Stream>
   </Connect>
   <Pause length="40"/>
 </Response> 
