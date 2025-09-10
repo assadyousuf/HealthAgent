@@ -3,7 +3,7 @@
 
 Note: This is a twillio free account with limited amount of calls. If you run into any issues let me know and I can check in on it
 
-# AssortHealth Agent
+# Health Agent
 
 This project is a FastAPI-based voice agent that integrates with Twilio to handle WebSocket connections and provide real-time communication for patient intake.
 
@@ -94,7 +94,7 @@ Choose one of these two methods to run the application:
 **Run the FastAPI application**:
 
 ```sh
-# Make sure you're in the AssortHealthAgent directory and your virtual environment is activated
+# Make sure you're in the HealthAgent directory and your virtual environment is activated
 python src/server.py
 ```
 
@@ -103,12 +103,12 @@ python src/server.py
 1. **Build the Docker image**:
 
    ```sh
-   docker build -t assorthealth-agent .
+   docker build -t health-agent .
    ```
 
 2. **Run the Docker container**:
    ```sh
-   docker run -it --rm -p 8765:8765 --env-file .env assorthealth-agent
+   docker run -it --rm -p 8765:8765 --env-file .env health-agent
    ```
 
 The server will start on port 8765. Keep this running while you test with Twilio.
